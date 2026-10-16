@@ -86,6 +86,82 @@ flowchart LR
   zip -r ../backend.zip .
   ```
 
+## Share From Docker Hub
+
+The pull-only [docker-compose.hub.yml](docker-compose.hub.yml) lets another computer run the project without the source code, local frontend files, or local `seed.sql`. Keep the Docker Hub repositories public for the simplest evaluator setup.
+
+### Publish the images
+
+Run these commands on the development computer after making a change:
+
+```powershell
+docker login -u siddharthh39
+
+docker build -t siddharthh39/cloudshield-api:1.0.0 .
+docker build -t siddharthh39/cloudshield-frontend:1.0.0 -f Frontend/Dockerfile Frontend
+docker build -t siddharthh39/cloudshield-seed:1.0.0 -f Dockerfile.seed .
+
+docker push siddharthh39/cloudshield-api:1.0.0
+docker push siddharthh39/cloudshield-frontend:1.0.0
+docker push siddharthh39/cloudshield-seed:1.0.0
+```
+
+Never publish `.env`, passwords, AWS credentials, or database credentials. The required repositories are:
+
+```text
+siddharthh39/cloudshield-api
+siddharthh39/cloudshield-frontend
+siddharthh39/cloudshield-seed
+```
+
+### Run on a fresh Windows computer
+
+Install and start Docker Desktop, then verify Docker is available:
+
+```powershell
+docker --version
+docker compose version
+```
+
+Clone this repository and enter it:
+
+```powershell
+git clone YOUR_GITHUB_REPOSITORY_URL
+cd cloudshield-ai
+```
+
+Create the local configuration file:
+
+```powershell
+Copy-Item .env.docker.example .env
+```
+
+Download and start the published images:
+
+```powershell
+docker compose -f docker-compose.hub.yml pull
+docker compose -f docker-compose.hub.yml up
+```
+
+Open `http://localhost:8080`. The API health check is `http://localhost:8000/health`.
+
+The `migrate` and `seed` containers exit after successful completion. That is expected; the `api`, `frontend`, and `db` containers remain running.
+
+Stop the application with:
+
+```powershell
+docker compose -f docker-compose.hub.yml down
+```
+
+To remove the local database and recreate all three demo sites from scratch:
+
+```powershell
+docker compose -f docker-compose.hub.yml down -v
+docker compose -f docker-compose.hub.yml up
+```
+
+If the Docker Hub repositories are private, run `docker login -u siddharthh39` on the other computer before pulling the images.
+
 ## Future Improvements
 - Add CI lint/test + IaC (CDK/Terraform) for repeatable deployments. The Docker image can be pushed to ECR and run as an ECS/Fargate service; set `DATABASE_URL` from Secrets Manager or SSM and point it at RDS/Aurora PostgreSQL.
 - Add auth (Cognito) and rate limiting at API Gateway.
