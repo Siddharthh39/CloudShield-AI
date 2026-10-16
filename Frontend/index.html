@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="theme-color" content="#08131f" />
+  <title>Cloud Shield AI | Security intelligence</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand"><span class="brand-mark">CS</span><span><strong>Cloud Shield</strong><small>AI security intelligence</small></span></div>
+      <div class="side-label">Workspace</div>
+      <nav class="nav-list" aria-label="Primary navigation">
+        <a class="nav-item active" href="#overview"><span class="nav-icon">~</span>Overview</a>
+        <a class="nav-item" href="#findings"><span class="nav-icon">!</span>Findings <span class="nav-count" id="navFindingCount">0</span></a>
+        <a class="nav-item" href="#logs"><span class="nav-icon">=</span>Log intelligence</a>
+      </nav>
+      <div class="sidebar-footer"><div class="status-dot"><span></span>Analysis engine online</div><div class="engine-card"><span class="pulse"></span><div><strong>AI baseline</strong><small>v0.9 · Last trained today</small></div></div></div>
+    </aside>
+    <main class="main-content">
+      <header class="topbar"><div><p class="eyebrow">Security operations / Overview</p><h1>Site intelligence</h1></div><div class="topbar-meta"><span class="live-chip"><span></span>Live workspace</span><span class="avatar">SS</span></div></header>
+      <section class="scan-hero" id="overview">
+        <div class="hero-copy"><p class="eyebrow accent">AI-powered surface analysis</p><h2>See what your site is<br /><em>exposing.</em></h2><p>Enter a URL to process its traffic signals, detect security gaps, and turn noisy logs into an actionable risk picture.</p></div>
+        <form class="scan-form" id="scanForm"><label for="urlInput">Analyze a website</label><div class="url-field"><span class="url-prefix">https://</span><input id="urlInput" name="url" type="text" placeholder="yoursite.com" autocomplete="url" required /><button type="submit" id="scanButton"><span class="button-icon">↗</span>Analyze site</button></div><div class="form-status" id="formStatus" role="status"></div></form>
+        <div class="scan-grid-lines"></div>
+      </section>
+      <section class="content-grid">
+        <div class="site-column"><div class="section-heading"><div><p class="eyebrow">Monitored surfaces</p><h3>Recent analyses</h3></div><span class="site-total" id="siteTotal">0 sites</span></div><div class="site-list" id="siteList"><div class="loading-state">Loading monitored sites...</div></div></div>
+        <div class="detail-column" id="detailPanel"><div class="loading-state large">Select a site to inspect its security posture.</div></div>
+      </section>
+    </main>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+# uvicorn[standard] for checking locally
+sqlalchemy>=2.0
+psycopg2-binary
+alembic
+#pydantic 
+pydantic==1.10.13 #need for serverless dp
+python-dotenv
+pydantic[email]
+mangum #for serverless deploment on aws lambda

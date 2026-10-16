@@ -1,0 +1,11 @@
+.env
+.git
+.gitignore
+__pycache__/
+*.py[cod]
+*.zip
+myenv/
+Frontend/
+README.md
+alembic.ini.example
+req.txt

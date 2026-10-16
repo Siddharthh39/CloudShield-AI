@@ -1,0 +1,7 @@
+myenv
+Backend/__pycache__/
+alembic/__pycache__/
+.env
+Frontend/assets/
+alembic.ini
+lamda_fn_pkg
