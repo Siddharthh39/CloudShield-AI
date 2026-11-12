@@ -1,16 +1,111 @@
 from datetime import datetime, timezone
+import json
+import logging
+import os
+import ipaddress
+import socket
+import time
+import uuid
+from functools import lru_cache
 from urllib.parse import urlparse
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
+import boto3
+from botocore.exceptions import BotoCoreError, ClientError
 from fastapi import FastAPI, HTTPException, Depends, Query
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from jose import jwt
+from jose.exceptions import JWTError
 from sqlalchemy import func
 from sqlalchemy.orm import Session
-from typing import List, Optional
+from typing import Optional
 from fastapi.middleware.cors import CORSMiddleware
 
 from Backend.database import get_db
 from Backend import models, schemas
 
 app = FastAPI(title="API backend for Me-API Playground")
+security = HTTPBearer(auto_error=False)
+logger = logging.getLogger(__name__)
+
+
+@lru_cache(maxsize=1)
+def _cognito_jwks():
+    region = os.getenv("COGNITO_REGION", os.getenv("AWS_REGION", "ap-south-1"))
+    pool_id = os.getenv("COGNITO_USER_POOL_ID")
+    if not pool_id:
+        raise HTTPException(status_code=503, detail="Cognito is not configured")
+    url = f"https://cognito-idp.{region}.amazonaws.com/{pool_id}/.well-known/jwks.json"
+    with urlopen(url, timeout=5) as response:
+        return json.load(response)["keys"]
+
+
+@lru_cache(maxsize=1)
+def _gemini_api_key():
+    secret_arn = os.getenv("GEMINI_API_KEY_SECRET_ARN")
+    if not secret_arn:
+        raise HTTPException(status_code=503, detail="Google Gemini is not configured")
+    try:
+        secret = boto3.client("secretsmanager", region_name=os.getenv("AWS_REGION")).get_secret_value(
+            SecretId=secret_arn
+        )
+        value = json.loads(secret["SecretString"])
+        api_key = value.get("api_key")
+    except (BotoCoreError, ClientError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=503, detail="Google Gemini credentials are unavailable") from exc
+    if not api_key or api_key == "configure-me":
+        raise HTTPException(status_code=503, detail="Google Gemini API key has not been configured")
+    return api_key
+
+
+def get_current_user(
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
+):
+    if os.getenv("AUTH_REQUIRED", "false").lower() != "true" and credentials is None:
+        return {"username": "local-demo", "groups": ["User"]}
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise HTTPException(status_code=401, detail="A Cognito bearer token is required")
+
+    region = os.getenv("COGNITO_REGION", os.getenv("AWS_REGION", "ap-south-1"))
+    pool_id = os.getenv("COGNITO_USER_POOL_ID")
+    client_id = os.getenv("COGNITO_APP_CLIENT_ID")
+    issuer = f"https://cognito-idp.{region}.amazonaws.com/{pool_id}"
+    try:
+        claims = jwt.decode(
+            credentials.credentials,
+            _cognito_jwks(),
+            algorithms=["RS256"],
+            issuer=issuer,
+            options={"verify_aud": False},
+        )
+    except (JWTError, ValueError, TypeError) as exc:
+        raise HTTPException(status_code=401, detail="Invalid Cognito token") from exc
+    if claims.get("token_use") == "access" and claims.get("client_id") != client_id:
+        raise HTTPException(status_code=401, detail="Token was issued for another client")
+    if claims.get("token_use") == "id" and claims.get("aud") != client_id:
+        raise HTTPException(status_code=401, detail="Token was issued for another client")
+    return claims
+
+
+def _subject(user):
+    subject = user.get("sub")
+    if not subject:
+        raise HTTPException(status_code=401, detail="Token has no user subject")
+    return subject
+
+
+def _is_admin(user):
+    groups = user.get("cognito:groups", []) or user.get("groups", [])
+    configured_admins = {
+        email.strip().lower()
+        for email in os.getenv("ADMIN_EMAILS", "").split(",")
+        if email.strip()
+    }
+    return (
+        "Admin" in groups
+        or user.get("email", "").lower() in configured_admins
+    )
 
 
 @app.middleware("http")
@@ -95,6 +190,8 @@ def _site_payload(site):
         "region": site.region,
         "tls_expiry": site.tls_expiry,
         "last_scan_at": site.last_scan_at,
+        "owner_sub": site.owner_sub,
+        "approval_status": site.approval_status,
         "latest_scan": _scan_payload(_latest_scan(site)),
     }
 
@@ -109,6 +206,63 @@ def _normalise_url(raw_url: str):
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise HTTPException(status_code=400, detail="Enter a valid http or https URL")
     return f"{parsed.scheme}://{parsed.netloc}{parsed.path.rstrip('/')}", parsed.hostname or parsed.netloc
+
+
+def _public_hostname(hostname):
+    try:
+        addresses = {info[4][0] for info in socket.getaddrinfo(hostname, 443, type=socket.SOCK_STREAM)}
+    except socket.gaierror as exc:
+        raise HTTPException(status_code=400, detail="The site hostname does not resolve") from exc
+    if not addresses or any(ipaddress.ip_address(address).is_private or ipaddress.ip_address(address).is_loopback for address in addresses):
+        raise HTTPException(status_code=400, detail="Private and internal network targets are not allowed")
+
+
+def _passive_scan(site, url, hostname):
+    started_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    request = Request(url, headers={"User-Agent": "CloudShield-Passive-Scanner/1.0"})
+    try:
+        with urlopen(request, timeout=8) as response:
+            headers = {key.lower(): value for key, value in response.headers.items()}
+            status_code = response.status
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="The site could not be reached for passive analysis") from exc
+
+    missing = [
+        header for header in (
+            "content-security-policy",
+            "strict-transport-security",
+            "x-content-type-options",
+            "referrer-policy",
+        ) if header not in headers
+    ]
+    risk_score = min(90, len(missing) * 15 + (10 if status_code >= 400 else 0))
+    grade = "A" if risk_score < 20 else "B" if risk_score < 45 else "C" if risk_score < 70 else "D"
+    scan = models.SecurityScan(
+        site=site, scan_key=f"passive-{uuid.uuid4()}", status="complete",
+        risk_score=risk_score, grade=grade,
+        summary=f"Passive HTTPS analysis completed for {hostname}. {len(missing)} recommended controls were not observed.",
+        started_at=started_at, duration_ms=0, log_count=1, request_count=1,
+        blocked_count=0,
+    )
+    if missing:
+        scan.findings.append(models.SecurityFinding(
+            finding_key=f"passive-{uuid.uuid4()}",
+            severity="high" if len(missing) >= 3 else "medium",
+            category="Headers", title="Recommended security headers are missing",
+            description="The passive response did not include all baseline defensive headers.",
+            recommendation="Review and configure the missing headers in the site's production edge or application.",
+            evidence={"missing_headers": missing, "status_code": status_code, "authorized": True},
+            status="open",
+        ))
+    scan.log_events.append(models.LogEvent(
+        event_key=f"passive-{uuid.uuid4()}", timestamp=started_at, method="GET",
+        path="/", status_code=status_code, source_ip="passive-check",
+        action="observed", severity="info",
+    ))
+    site.status, site.risk_score, site.grade = ("healthy" if risk_score < 30 else "watch" if risk_score < 60 else "critical"), risk_score, grade
+    site.summary, site.last_scan_at = scan.summary, started_at
+    site.scans.append(scan)
+    return scan
 
 
 def _generic_scan(site, hostname):
@@ -306,23 +460,38 @@ def search(
 
 
 @app.get("/sites")
-def list_sites(db: Session = Depends(get_db)):
-    sites = db.query(models.MonitoredSite).order_by(models.MonitoredSite.last_scan_at.desc()).all()
+def list_sites(db: Session = Depends(get_db), _user=Depends(get_current_user)):
+    user = _user
+    query = db.query(models.MonitoredSite)
+    if not _is_admin(user):
+        query = query.filter(models.MonitoredSite.owner_sub == _subject(user))
+    sites = query.order_by(models.MonitoredSite.last_scan_at.desc()).all()
     return [_site_payload(site) for site in sites]
 
 
 @app.get("/sites/{site_id}")
-def get_site(site_id: int, db: Session = Depends(get_db)):
-    site = db.query(models.MonitoredSite).filter(models.MonitoredSite.id == site_id).first()
+def get_site(site_id: int, db: Session = Depends(get_db), _user=Depends(get_current_user)):
+    query = db.query(models.MonitoredSite).filter(models.MonitoredSite.id == site_id)
+    if not _is_admin(_user):
+        query = query.filter(models.MonitoredSite.owner_sub == _subject(_user))
+    site = query.first()
     if not site:
         raise HTTPException(status_code=404, detail="Site analysis not found")
     return _site_payload(site)
 
 
 @app.post("/sites/analyze")
-def analyze_site(request: schemas.AnalyzeRequest, db: Session = Depends(get_db)):
+def analyze_site(
+    request: schemas.AnalyzeRequest,
+    db: Session = Depends(get_db),
+    _user=Depends(get_current_user),
+):
+    user = _user
     normalized_url, hostname = _normalise_url(request.url)
-    site = db.query(models.MonitoredSite).filter(models.MonitoredSite.url == normalized_url).first()
+    site = db.query(models.MonitoredSite).filter(
+        models.MonitoredSite.url == normalized_url,
+        models.MonitoredSite.owner_sub == _subject(user),
+    ).first()
     if not site:
         site = models.MonitoredSite(
             url=normalized_url,
@@ -335,10 +504,154 @@ def analyze_site(request: schemas.AnalyzeRequest, db: Session = Depends(get_db))
             region="Local analysis",
             tls_expiry="Not observed",
             last_scan_at=datetime.now(timezone.utc).replace(tzinfo=None),
+            owner_sub=_subject(user),
+            approval_status="pending_approval",
         )
         db.add(site)
         db.flush()
-        site.scans.append(_generic_scan(site, hostname))
         db.commit()
         db.refresh(site)
     return _site_payload(site)
+
+
+@app.post("/sites/register")
+def register_site(
+    request: schemas.SiteRegistrationRequest,
+    db: Session = Depends(get_db),
+    _user=Depends(get_current_user),
+):
+    normalized_url, hostname = _normalise_url(request.url)
+    _public_hostname(hostname)
+    if db.query(models.MonitoredSite).filter_by(url=normalized_url).first():
+        raise HTTPException(status_code=409, detail="This site is already registered")
+    site = models.MonitoredSite(
+        url=normalized_url, name=request.name or hostname, status="pending",
+        risk_score=0, grade="-", summary="Awaiting administrator approval before passive diagnostics.",
+        technology="Not analyzed", region="Pending", tls_expiry="Not analyzed",
+        owner_sub=_subject(_user), approval_status="pending_approval",
+    )
+    db.add(site)
+    db.commit()
+    db.refresh(site)
+    return _site_payload(site)
+
+
+@app.post("/sites/{site_id}/scan")
+def scan_site(site_id: int, db: Session = Depends(get_db), _user=Depends(get_current_user)):
+    site = db.query(models.MonitoredSite).filter(
+        models.MonitoredSite.id == site_id,
+        models.MonitoredSite.owner_sub == _subject(_user),
+    ).first()
+    if not site:
+        raise HTTPException(status_code=404, detail="Site not found")
+    if site.approval_status != "approved":
+        raise HTTPException(status_code=409, detail="An administrator must approve this site before scanning")
+    _public_hostname(urlparse(site.url).hostname or "")
+    _passive_scan(site, site.url, urlparse(site.url).hostname or "")
+    db.commit()
+    db.refresh(site)
+    return _site_payload(site)
+
+
+@app.get("/admin/sites")
+def pending_sites(db: Session = Depends(get_db), _user=Depends(get_current_user)):
+    if not _is_admin(_user):
+        raise HTTPException(status_code=403, detail="Administrator role required")
+    return [_site_payload(site) for site in db.query(models.MonitoredSite).filter_by(approval_status="pending_approval").all()]
+
+
+@app.post("/admin/sites/{site_id}/approve")
+def approve_site(site_id: int, db: Session = Depends(get_db), _user=Depends(get_current_user)):
+    if not _is_admin(_user):
+        raise HTTPException(status_code=403, detail="Administrator role required")
+    site = db.query(models.MonitoredSite).filter_by(id=site_id).first()
+    if not site:
+        raise HTTPException(status_code=404, detail="Site not found")
+    site.approval_status = "approved"
+    site.status = "watch"
+    site.summary = "Approved. Ready for passive diagnostics."
+    db.commit()
+    return _site_payload(site)
+
+
+@app.post("/ai/explain", response_model=schemas.AiExplainOut)
+def explain_finding(
+    request: schemas.AiExplainRequest,
+    _user=Depends(get_current_user),
+):
+    model_id = os.getenv("GEMINI_MODEL_ID", "gemini-3.8-flash")
+    prompt = (
+        "You are a defensive website security analyst. Analyze the finding using only the supplied "
+        "evidence. Do not claim malware, spyware, hacking, exploitation, compromise, or a specific "
+        "CVE was detected unless the evidence explicitly proves it. Distinguish observed evidence "
+        "from plausible risk scenarios. Return these labeled sections concisely:\n"
+        "Explanation: what was observed and why it matters.\n"
+        "Threat scenarios: realistic attack techniques or abuse that this weakness can enable, "
+        "without claiming they occurred.\n"
+        "Detection status: state clearly what this passive check did not test, including malware "
+        "and spyware detection when applicable.\n"
+        "Recommendation: prioritized remediation steps.\n"
+        "Verification: a quick way to confirm the fix.\n\n"
+        f"Severity: {request.severity}\nTitle: {request.title}\n"
+        f"Description: {request.description}\nExisting recommendation: {request.recommendation or 'None'}\n"
+        f"Evidence: {json.dumps(request.evidence or {})}"
+    )
+    request_body = json.dumps({
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"maxOutputTokens": 300, "temperature": 0.2},
+    }).encode()
+    text_output = None
+    last_error = None
+    for attempt in range(2):
+        try:
+            gemini_request = Request(
+                f"https://generativelanguage.googleapis.com/v1beta/models/{model_id}:generateContent"
+                f"?key={_gemini_api_key()}",
+                data=request_body,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urlopen(gemini_request, timeout=8) as response:
+                response_body = json.load(response)
+            text_output = response_body["candidates"][0]["content"]["parts"][0]["text"].strip()
+            break
+        except HTTPException:
+            raise
+        except HTTPError as exc:
+            body = exc.read().decode("utf-8", "replace")[:1000]
+            logger.error("Google Gemini returned HTTP %s: %s", exc.code, body)
+            last_error = exc
+            if exc.code not in {429, 500, 502, 503, 504} or attempt == 1:
+                break
+            time.sleep(0.25)
+        except (TimeoutError, URLError, KeyError, IndexError, TypeError, json.JSONDecodeError) as exc:
+            logger.error("Google Gemini response failed: %s", exc)
+            last_error = exc
+            if attempt == 1:
+                break
+            time.sleep(0.25)
+
+    if text_output is None:
+        logger.warning("Using local explanation fallback after Gemini failure: %s", last_error)
+        text_output = (
+            f"Explanation: The {request.severity} finding '{request.title}' was identified from "
+            "the supplied passive evidence.\n"
+            "Threat scenarios: Depending on the missing control, attackers may abuse browser "
+            "confusion, content injection, or information leakage; this scan does not show that "
+            "any attack occurred.\n"
+            "Detection status: Malware, spyware, and compromise were not detected or ruled out by "
+            "this passive response check.\n"
+            f"Recommendation: {request.recommendation or 'Review the supplied evidence and apply remediation after validation.'}\n"
+            "Verification: Repeat the passive check and confirm the relevant control is present."
+        )
+        model_id = "local-test-fallback"
+
+    explanation = text_output
+    recommendation = request.recommendation or "Review the generated guidance against the supplied evidence before applying changes."
+    if "Recommendation:" in text_output:
+        explanation, recommendation = text_output.split("Recommendation:", 1)
+        explanation = explanation.replace("Explanation:", "").strip()
+        recommendation = recommendation.strip()
+    if not explanation:
+        explanation = "The model returned no explanation for this finding."
+    return {"explanation": explanation, "recommendation": recommendation, "model": model_id}

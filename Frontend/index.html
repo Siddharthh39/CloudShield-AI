@@ -10,7 +10,18 @@
   <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="styles.css" />
 </head>
-<body>
+<body class="logged-out">
+  <section class="login-screen" id="loginScreen">
+    <div class="login-card">
+      <div class="brand login-brand"><span class="brand-mark">CS</span><span><strong>Cloud Shield</strong><small>AI security intelligence</small></span></div>
+      <p class="eyebrow accent">Authorized security workspace</p>
+      <h1>Protect every surface with clarity.</h1>
+      <p class="login-copy">Sign in with your CloudShield account to view monitored sites, findings, and Gemini-powered guidance.</p>
+      <button class="login-button" id="loginButton">Sign in with Amazon Cognito</button>
+      <button class="demo-button" id="demoButton" hidden>Continue with local demo</button>
+      <p class="login-error" id="loginError" role="alert"></p>
+    </div>
+  </section>
   <div class="app-shell">
     <aside class="sidebar">
       <div class="brand"><span class="brand-mark">CS</span><span><strong>Cloud Shield</strong><small>AI security intelligence</small></span></div>
@@ -23,11 +34,22 @@
       <div class="sidebar-footer"><div class="status-dot"><span></span>Analysis engine online</div><div class="engine-card"><span class="pulse"></span><div><strong>AI baseline</strong><small>v0.9 · Last trained today</small></div></div></div>
     </aside>
     <main class="main-content">
-      <header class="topbar"><div><p class="eyebrow">Security operations / Overview</p><h1>Site intelligence</h1></div><div class="topbar-meta"><span class="live-chip"><span></span>Live workspace</span><span class="avatar">SS</span></div></header>
+      <header class="topbar"><div><p class="eyebrow">Security operations / Overview</p><h1>Site intelligence</h1></div><div class="topbar-meta"><span class="live-chip"><span></span>Live workspace</span><span class="role-badge" id="roleBadge">Client</span><span class="avatar" id="userAvatar">CS</span><button class="logout-button" id="logoutButton">Sign out</button></div></header>
       <section class="scan-hero" id="overview">
         <div class="hero-copy"><p class="eyebrow accent">AI-powered surface analysis</p><h2>See what your site is<br /><em>exposing.</em></h2><p>Enter a URL to process its traffic signals, detect security gaps, and turn noisy logs into an actionable risk picture.</p></div>
-        <form class="scan-form" id="scanForm"><label for="urlInput">Analyze a website</label><div class="url-field"><span class="url-prefix">https://</span><input id="urlInput" name="url" type="text" placeholder="yoursite.com" autocomplete="url" required /><button type="submit" id="scanButton"><span class="button-icon">↗</span>Analyze site</button></div><div class="form-status" id="formStatus" role="status"></div></form>
+        <form class="scan-form" id="scanForm"><label for="urlInput">Register an authorized website</label><div class="url-field"><span class="url-prefix">https://</span><input id="urlInput" name="url" type="text" placeholder="yourcompany.com" autocomplete="url" required /><button type="submit" id="scanButton"><span class="button-icon">+</span>Register site</button></div><div class="form-status" id="formStatus" role="status"></div></form>
         <div class="scan-grid-lines"></div>
+      </section>
+      <section class="overview-stats" aria-label="Workspace summary">
+        <article><span>Total targets</span><strong id="statSites">0</strong><small>Owned by this account</small></article>
+        <article><span>Open findings</span><strong id="statFindings">0</strong><small>Across approved scans</small></article>
+        <article><span>Pending approval</span><strong id="statPending">0</strong><small>Admin review required</small></article>
+        <article><span>AI diagnostics</span><strong>Passive</strong><small>Gemini-ready analysis</small></article>
+      </section>
+      <section class="admin-panel" id="adminPanel" hidden>
+        <div><p class="eyebrow accent">Administrator controls</p><h3>Client review queue</h3><p>Approve newly registered client targets before passive diagnostics begin.</p></div>
+        <button id="refreshAdminButton">Refresh pending sites</button>
+        <div class="admin-queue" id="adminQueue"></div>
       </section>
       <section class="content-grid">
         <div class="site-column"><div class="section-heading"><div><p class="eyebrow">Monitored surfaces</p><h3>Recent analyses</h3></div><span class="site-total" id="siteTotal">0 sites</span></div><div class="site-list" id="siteList"><div class="loading-state">Loading monitored sites...</div></div></div>
@@ -35,6 +57,7 @@
       </section>
     </main>
   </div>
-  <script src="app.js"></script>
+  <script src="config.js?v=20261111-2"></script>
+  <script src="app.js?v=20261111-2"></script>
 </body>
 </html>

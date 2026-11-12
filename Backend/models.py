@@ -72,6 +72,8 @@ class MonitoredSite(Base):
     region = Column(String)
     tls_expiry = Column(String)
     last_scan_at = Column(DateTime)
+    owner_sub = Column(String, nullable=True, index=True)
+    approval_status = Column(String, nullable=False, default="approved")
 
     scans = relationship("SecurityScan", back_populates="site", cascade="all, delete-orphan")
 

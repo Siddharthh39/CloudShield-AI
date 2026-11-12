@@ -1,0 +1,255 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: CloudShield AI - authenticated security intelligence workspace
+
+Parameters:
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC containing the private subnets used by RDS and Lambda.
+  PrivateSubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: At least two subnets in the selected VPC for the RDS subnet group.
+  DatabaseName:
+    Type: String
+    Default: cloudshield
+  DatabaseInstanceClass:
+    Type: String
+    Default: db.t4g.micro
+  GeminiModelId:
+    Type: String
+    Default: gemini-3.8-flash
+  FrontendAllowedOrigin:
+    Type: String
+    Default: '*'
+
+Globals:
+  Function:
+    Runtime: python3.11
+    Timeout: 30
+    MemorySize: 512
+    Environment:
+      Variables:
+        DB_HOST: !GetAtt Database.Endpoint.Address
+        DB_NAME: !Ref DatabaseName
+        DB_SECRET_ARN: !Ref DatabaseSecret
+        COGNITO_REGION: !Ref AWS::Region
+        COGNITO_USER_POOL_ID: !Ref UserPool
+        COGNITO_APP_CLIENT_ID: !Ref UserPoolClient
+        AUTH_REQUIRED: 'true'
+        ADMIN_EMAILS: hellosiddharthh@gmail.com
+        GEMINI_MODEL_ID: !Ref GeminiModelId
+        GEMINI_API_KEY_SECRET_ARN: !Ref GeminiApiKeySecret
+
+Resources:
+  DatabaseSecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: CloudShield PostgreSQL credentials
+      GenerateSecretString:
+        SecretStringTemplate: '{"username":"cloudshield"}'
+        GenerateStringKey: password
+        PasswordLength: 32
+        ExcludeCharacters: '"@/\\'
+
+  GeminiApiKeySecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Description: Google Gemini API key for CloudShield explanations
+      SecretString: '{"api_key":"configure-me"}'
+
+  DatabaseSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: PostgreSQL access from CloudShield Lambda only
+      VpcId: !Ref VpcId
+
+  LambdaToDatabaseIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref DatabaseSecurityGroup
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      CidrIp: 0.0.0.0/0
+
+  DatabaseSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: CloudShield private database subnets
+      SubnetIds: !Ref PrivateSubnetIds
+
+  Database:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      DBInstanceClass: !Ref DatabaseInstanceClass
+      AllocatedStorage: 20
+      MaxAllocatedStorage: 100
+      Engine: postgres
+      DBName: !Ref DatabaseName
+      MasterUsername: cloudshield
+      MasterUserPassword: !Sub '{{resolve:secretsmanager:${DatabaseSecret}:SecretString:password}}'
+      DBSubnetGroupName: !Ref DatabaseSubnetGroup
+      VPCSecurityGroups:
+        - !Ref DatabaseSecurityGroup
+      PubliclyAccessible: true
+      BackupRetentionPeriod: 0
+      StorageEncrypted: true
+
+  ApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: Backend.main.handler
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Statement:
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource:
+                - !Ref DatabaseSecret
+                - !Ref GeminiApiKeySecret
+      Events:
+        ApiRoot:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /
+            Method: ANY
+        Api:
+          Type: HttpApi
+          Properties:
+            ApiId: !Ref HttpApi
+            Path: /{proxy+}
+            Method: ANY
+
+  HttpApi:
+    Type: AWS::Serverless::HttpApi
+    Properties:
+      CorsConfiguration:
+        AllowOrigins: [!Ref FrontendAllowedOrigin]
+        AllowHeaders: ['Authorization', 'Content-Type']
+        AllowMethods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS']
+
+  DatabaseBootstrapFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      CodeUri: .
+      Handler: Backend.bootstrap.handler
+      Timeout: 120
+      Policies:
+        - AWSLambdaBasicExecutionRole
+        - Statement:
+            - Effect: Allow
+              Action: secretsmanager:GetSecretValue
+              Resource: !Ref DatabaseSecret
+
+  DatabaseBootstrap:
+    Type: Custom::DatabaseBootstrap
+    Properties:
+      ServiceToken: !GetAtt DatabaseBootstrapFunction.Arn
+      Version: '2'
+
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub ${AWS::StackName}-users
+      UsernameAttributes: [email]
+      AutoVerifiedAttributes: [email]
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 12
+          RequireLowercase: true
+          RequireNumbers: true
+          RequireSymbols: true
+          RequireUppercase: true
+
+  UserGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: User
+      UserPoolId: !Ref UserPool
+      Description: Website owners
+
+  AnalystGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: Analyst
+      UserPoolId: !Ref UserPool
+      Description: Security analysts
+
+  AdminGroup:
+    Type: AWS::Cognito::UserPoolGroup
+    Properties:
+      GroupName: Admin
+      UserPoolId: !Ref UserPool
+      Description: Platform administrators who approve registered sites
+
+  UserPoolDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Sub cloudshield-${AWS::AccountId}-${AWS::Region}
+      UserPoolId: !Ref UserPool
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      UserPoolId: !Ref UserPool
+      GenerateSecret: false
+      AllowedOAuthFlowsUserPoolClient: true
+      AllowedOAuthFlows: [code]
+      AllowedOAuthScopes: [openid, email, profile]
+      SupportedIdentityProviders: [COGNITO]
+      CallbackURLs:
+        - http://localhost:8080/
+        - !Sub https://${FrontendBucket}.s3.${AWS::Region}.${AWS::URLSuffix}/index.html
+      LogoutURLs:
+        - http://localhost:8080/
+        - !Sub https://${FrontendBucket}.s3.${AWS::Region}.${AWS::URLSuffix}/index.html
+
+  FrontendBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      WebsiteConfiguration:
+        IndexDocument: index.html
+        ErrorDocument: index.html
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: false
+        BlockPublicPolicy: false
+        IgnorePublicAcls: false
+        RestrictPublicBuckets: false
+
+  FrontendBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref FrontendBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AllowPublicWebsiteRead
+            Effect: Allow
+            Principal: '*'
+            Action: s3:GetObject
+            Resource: !Sub ${FrontendBucket.Arn}/*
+
+Outputs:
+  ApiUrl:
+    Value: !Sub https://${HttpApi}.execute-api.${AWS::Region}.${AWS::URLSuffix}
+  FrontendBucketName:
+    Value: !Ref FrontendBucket
+  FrontendUrl:
+    Value: !Sub https://${FrontendBucket}.s3.${AWS::Region}.${AWS::URLSuffix}/index.html
+  CognitoDomain:
+    Value: !Sub https://${UserPoolDomain}.auth.${AWS::Region}.amazoncognito.com
+  CognitoClientId:
+    Value: !Ref UserPoolClient
+  CognitoUserPoolId:
+    Value: !Ref UserPool
+  GeminiApiKeySecretArn:
+    Description: Secrets Manager secret to populate with the Google Gemini API key
+    Value: !Ref GeminiApiKeySecret

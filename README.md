@@ -162,7 +162,75 @@ docker compose -f docker-compose.hub.yml up
 
 If the Docker Hub repositories are private, run `docker login -u siddharthh39` on the other computer before pulling the images.
 
-## Future Improvements
-- Add CI lint/test + IaC (CDK/Terraform) for repeatable deployments. The Docker image can be pushed to ECR and run as an ECS/Fargate service; set `DATABASE_URL` from Secrets Manager or SSM and point it at RDS/Aurora PostgreSQL.
-- Add auth (Cognito) and rate limiting at API Gateway.
-- Swap mock skill weights for real computed metrics in charts.
+## AWS SAM deployment
+
+The checked-in [template.yaml](template.yaml) provisions the complete demo path:
+
+- private PostgreSQL RDS with encrypted storage and a generated Secrets Manager password;
+- VPC-connected FastAPI Lambda and HTTP API Gateway;
+- Cognito user pool, `User` and `Analyst` groups, and hosted UI client;
+- a Secrets Manager secret for the Google Gemini API key;
+- CloudFront with an S3 origin protected by Origin Access Control;
+- a database bootstrap custom resource that creates the tables and seeds four labelled demo snapshots.
+
+The current demo deployment uses the account's default public subnets and an S3
+website endpoint because this account has no private subnets and CloudFront is
+account-restricted. RDS and the frontend are publicly reachable; use private
+subnets, a restricted security group, and CloudFront/OAC before production.
+Deploy with AWS SAM CLI, AWS CLI, and Docker installed:
+
+```bash
+chmod +x scripts/deploy.sh
+AWS_REGION=ap-south-1 VpcId=vpc-... PrivateSubnetIds=subnet-...,subnet-... ./scripts/deploy.sh
+```
+
+SAM will prompt for parameters if they are not supplied through a `samconfig.toml`.
+After deployment, the script writes the API and Cognito outputs to
+`Frontend/config.js`, uploads the frontend, and invalidates CloudFront. Create a
+user from Cognito's hosted UI or the AWS console; the deployed API requires a
+valid Cognito bearer token. Local Docker remains unauthenticated and uses the
+same four seeded demo snapshots.
+
+The AI security analyst uses Google Gemini. After deployment, create a Gemini API
+key in Google AI Studio and store it in the provisioned secret:
+
+```bash
+aws secretsmanager put-secret-value \
+  --secret-id <gemini-secret-arn> \
+  --secret-string '{"api_key":"<your-google-gemini-api-key>"}' \
+  --region ap-south-1
+```
+
+The secret ARN is available with:
+
+```bash
+aws cloudformation describe-stacks --stack-name cloudshield-ai \
+  --region ap-south-1 \
+  --query "Stacks[0].Outputs[?OutputKey=='GeminiApiKeySecretArn'].OutputValue" \
+  --output text
+```
+
+The API reads the key only from Secrets Manager and sends evidence-grounded
+requests to Gemini at `POST /ai/explain`. Do not commit the key to source code.
+
+### Tenant isolation and site diagnostics
+
+Every Cognito user now has an isolated workspace. Site registrations store the
+Cognito `sub` as `owner_sub`; list, detail, scan, and AI endpoints only return
+records owned by that subject. New registrations are `pending_approval` and
+cannot be scanned until a Cognito user in the `Admin` group approves them:
+
+```bash
+aws cognito-idp admin-add-user-to-group \
+  --user-pool-id <user-pool-id> \
+  --username <admin-email> \
+  --group-name Admin \
+  --region ap-south-1
+```
+
+The current first scan is a passive, authorization-gated check of the public
+HTTPS response: DNS reachability, status, TLS endpoint access, and baseline
+security headers. Gemini explains evidence from that scan; it does not invent
+vulnerabilities. Private or internal targets are rejected. Deeper active tools
+should be added as a separately authorized worker workflow rather than enabled
+implicitly from a submitted URL.

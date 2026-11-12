@@ -1,4 +1,5 @@
 myenv
+.aws-sam
 Backend/__pycache__/
 alembic/__pycache__/
 .env

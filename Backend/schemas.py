@@ -72,6 +72,25 @@ class AnalyzeRequest(BaseModel):
     url: str
 
 
+class SiteRegistrationRequest(BaseModel):
+    url: str
+    name: Optional[str] = None
+
+
+class AiExplainRequest(BaseModel):
+    title: str
+    severity: str
+    description: str
+    recommendation: Optional[str] = None
+    evidence: Optional[Any] = None
+
+
+class AiExplainOut(BaseModel):
+    explanation: str
+    recommendation: str
+    model: str
+
+
 class FindingOut(BaseModel):
     id: int
     severity: str
@@ -134,4 +153,3 @@ class SiteOut(BaseModel):
 
     class Config:
         orm_mode = True
-

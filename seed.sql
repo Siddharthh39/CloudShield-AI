@@ -106,3 +106,22 @@ INSERT INTO log_events (scan_id, event_key, timestamp, method, path, status_code
 SELECT id, 'seed-meridian-log-1', '2026-10-16 09:28:48', 'GET', '/admin/export', 200, '198.51.100.77', 'allowed', 'critical'
 FROM security_scans WHERE scan_key = 'seed-meridian-2026'
 ON CONFLICT (event_key) DO UPDATE SET scan_id = EXCLUDED.scan_id, timestamp = EXCLUDED.timestamp, method = EXCLUDED.method, path = EXCLUDED.path, status_code = EXCLUDED.status_code, source_ip = EXCLUDED.source_ip, action = EXCLUDED.action, severity = EXCLUDED.severity;
+
+-- A reserved public example domain is included as a clearly labelled, non-production snapshot.
+INSERT INTO monitored_sites (url, name, status, risk_score, grade, summary, technology, region, tls_expiry, last_scan_at)
+VALUES ('https://example.com', 'Example Commerce (demo snapshot)', 'watch', 31, 'B', 'Public example-domain telemetry is included as a non-production demonstration snapshot.', 'Apache, CDN', 'us-east-1', '2027-01-15', '2026-10-16 09:25:00')
+ON CONFLICT (url) DO UPDATE SET name = EXCLUDED.name, status = EXCLUDED.status, risk_score = EXCLUDED.risk_score, grade = EXCLUDED.grade, summary = EXCLUDED.summary, technology = EXCLUDED.technology, region = EXCLUDED.region, tls_expiry = EXCLUDED.tls_expiry, last_scan_at = EXCLUDED.last_scan_at
+RETURNING id \gset site_example_
+
+INSERT INTO security_scans (site_id, scan_key, status, risk_score, grade, summary, started_at, duration_ms, log_count, request_count, blocked_count)
+VALUES (:site_example_id, 'seed-example-2026', 'complete', 31, 'B', 'Public example-domain telemetry is included as a non-production demonstration snapshot.', '2026-10-16 09:25:00', 990, 6420, 6420, 12)
+ON CONFLICT (scan_key) DO UPDATE SET site_id = EXCLUDED.site_id, status = EXCLUDED.status, risk_score = EXCLUDED.risk_score, grade = EXCLUDED.grade, summary = EXCLUDED.summary, started_at = EXCLUDED.started_at, duration_ms = EXCLUDED.duration_ms, log_count = EXCLUDED.log_count, request_count = EXCLUDED.request_count, blocked_count = EXCLUDED.blocked_count
+RETURNING id \gset scan_example_
+
+INSERT INTO security_findings (scan_id, finding_key, severity, category, title, description, recommendation, evidence, status)
+VALUES (:scan_example_id, 'seed-example-headers', 'low', 'Headers', 'Security policy coverage should be reviewed', 'The demo snapshot does not contain evidence for every recommended response header.', 'Confirm the production response policy and add missing headers where appropriate.', '{"source":"seeded demonstration snapshot","authorized":true}', 'open')
+ON CONFLICT (finding_key) DO UPDATE SET scan_id = EXCLUDED.scan_id, severity = EXCLUDED.severity, category = EXCLUDED.category, title = EXCLUDED.title, description = EXCLUDED.description, recommendation = EXCLUDED.recommendation, evidence = EXCLUDED.evidence, status = EXCLUDED.status;
+
+INSERT INTO log_events (scan_id, event_key, timestamp, method, path, status_code, source_ip, action, severity)
+VALUES (:scan_example_id, 'seed-example-log-1', '2026-10-16 09:24:40', 'GET', '/', 200, '203.0.113.42', 'allowed', 'info')
+ON CONFLICT (event_key) DO UPDATE SET scan_id = EXCLUDED.scan_id, timestamp = EXCLUDED.timestamp, method = EXCLUDED.method, path = EXCLUDED.path, status_code = EXCLUDED.status_code, source_ip = EXCLUDED.source_ip, action = EXCLUDED.action, severity = EXCLUDED.severity;

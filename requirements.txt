@@ -9,3 +9,5 @@ pydantic==1.10.13 #need for serverless dp
 python-dotenv
 pydantic[email]
 mangum #for serverless deploment on aws lambda
+python-jose[cryptography]
+boto3
