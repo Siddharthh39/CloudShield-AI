@@ -5,6 +5,7 @@ import os
 import ipaddress
 import socket
 import time
+from time import perf_counter
 import uuid
 from functools import lru_cache
 from urllib.parse import urlparse
@@ -218,6 +219,7 @@ def _public_hostname(hostname):
 
 
 def _passive_scan(site, url, hostname):
+    scan_started = perf_counter()
     started_at = datetime.now(timezone.utc).replace(tzinfo=None)
     request = Request(url, headers={"User-Agent": "CloudShield-Passive-Scanner/1.0"})
     try:
@@ -261,7 +263,7 @@ def _passive_scan(site, url, hostname):
     ))
     site.status, site.risk_score, site.grade = ("healthy" if risk_score < 30 else "watch" if risk_score < 60 else "critical"), risk_score, grade
     site.summary, site.last_scan_at = scan.summary, started_at
-    site.scans.append(scan)
+    scan.duration_ms = round((perf_counter() - scan_started) * 1000)
     return scan
 
 
@@ -538,16 +540,17 @@ def register_site(
 
 @app.post("/sites/{site_id}/scan")
 def scan_site(site_id: int, db: Session = Depends(get_db), _user=Depends(get_current_user)):
-    site = db.query(models.MonitoredSite).filter(
-        models.MonitoredSite.id == site_id,
-        models.MonitoredSite.owner_sub == _subject(_user),
-    ).first()
+    query = db.query(models.MonitoredSite).filter(models.MonitoredSite.id == site_id)
+    if not _is_admin(_user):
+        query = query.filter(models.MonitoredSite.owner_sub == _subject(_user))
+    site = query.first()
     if not site:
         raise HTTPException(status_code=404, detail="Site not found")
     if site.approval_status != "approved":
         raise HTTPException(status_code=409, detail="An administrator must approve this site before scanning")
     _public_hostname(urlparse(site.url).hostname or "")
-    _passive_scan(site, site.url, urlparse(site.url).hostname or "")
+    scan = _passive_scan(site, site.url, urlparse(site.url).hostname or "")
+    db.add(scan)
     db.commit()
     db.refresh(site)
     return _site_payload(site)

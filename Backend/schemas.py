@@ -149,6 +149,7 @@ class SiteOut(BaseModel):
     region: Optional[str] = None
     tls_expiry: Optional[str] = None
     last_scan_at: Optional[datetime] = None
+    approval_status: str = "pending_approval"
     latest_scan: Optional[ScanOut] = None
 
     class Config:

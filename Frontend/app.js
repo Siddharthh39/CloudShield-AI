@@ -53,6 +53,7 @@ async function loadAdminQueue() {
     byId("adminQueue").innerHTML = pending.length ? pending.map(site => `<div class="admin-row"><span><strong>${escapeHtml(site.name)}</strong><small>${escapeHtml(site.url)}</small></span><button data-approve-id="${site.id}">Approve</button></div>`).join("") : "<small>No sites waiting for approval.</small>";
     byId("adminQueue").querySelectorAll("[data-approve-id]").forEach(button => button.addEventListener("click", async () => {
       await api(`/admin/sites/${button.dataset.approveId}/approve`, { method: "POST" });
+      await loadSites();
       loadAdminQueue();
     }));
   } catch (error) {
@@ -126,7 +127,9 @@ function logMarkup(events) {
 function renderDetail(site) {
   const scan = site.latest_scan || { findings: [], log_events: [], request_count: 0, blocked_count: 0, duration_ms: 0, log_count: 0 };
   const openFindings = (scan.findings || []).filter(finding => finding.status === "open");
-  const approval = site.approval_status === "approved" ? `<button class="scan-now" data-site-id="${site.id}">Run passive diagnostics</button>` : `<span class="pending-badge">Pending administrator approval</span>`;
+  const approval = site.approval_status === "approved"
+    ? `<button class="scan-now" data-site-id="${site.id}">Run passive diagnostics</button>`
+    : `<span class="pending-badge">Pending administrator approval</span><button class="refresh-site" data-site-id="${site.id}">Refresh approval status</button>`;
   byId("detailPanel").innerHTML = `<div class="detail-panel">
     <div class="detail-header"><div><p class="eyebrow">Current analysis</p><h2>${escapeHtml(site.name)}</h2><div class="detail-url">${escapeHtml(site.url)}</div></div><div class="grade-box"><strong>${escapeHtml(site.grade)}</strong><div><small>Risk grade</small><small>${escapeHtml(site.status)} posture</small></div></div></div>
     <div class="summary-line">${escapeHtml(site.summary)} ${approval}</div>
@@ -148,6 +151,8 @@ function renderDetail(site) {
   }));
   const scanButton = byId("detailPanel").querySelector(".scan-now");
   if (scanButton) scanButton.addEventListener("click", () => runPassiveScan(site.id));
+  const refreshButton = byId("detailPanel").querySelector(".refresh-site");
+  if (refreshButton) refreshButton.addEventListener("click", loadSites);
 }
 function selectSite(siteId) { selectedSiteId = siteId; const site = sites.find(item => item.id === siteId); if (!site) return; byId("urlInput").value = site.url.replace(/^https?:\/\//, ""); renderSites(); renderDetail(site); }
 async function loadSites() {
