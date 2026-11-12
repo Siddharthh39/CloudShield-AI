@@ -1,5 +1,9 @@
 # Cloud Shield AI
 
+## Documentation
+
+- [Software Requirements Specification](docs/SRS.md)
+
 ## Overview
 Cloud Shield AI is a security intelligence workspace for turning website URLs and request telemetry into an understandable risk picture. The local Docker stack includes a FastAPI analysis API, PostgreSQL persistence, an idempotent demo seed, and a professional static operations dashboard. Key capabilities:
 - Submit a URL for a baseline analysis and receive a risk grade, score, findings, recommendations, and representative log events.
